@@ -1,0 +1,73 @@
+name: "CiviCRM CI"
+description: "CiviCRM Continuous Integration"
+
+inputs:
+  civicrm:
+    description: "CiviCRM version"
+    default: 'master'
+  php:
+    description: "PHP version"
+    default: "8.1"
+  extension:
+    required: true
+  build-type:
+    description: "civibuild build type"
+    default: "drupal-clean"
+
+outputs:
+  ext-dir:
+    description: "Extension Directory"
+    value: ${{ steps.export-paths.outputs.ext-dir }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: "install-deps"
+      name: "Install dependencies"
+      shell: bash
+      run: |
+        sudo apt install lynx
+        sudo rm /etc/alternatives/php
+        sudo ln -s "/usr/bin/php${{ inputs.php }}" "/etc/alternatives/php"
+
+    - id: "install-buildkit"
+      name: "Install CiviCRM buildkit"
+      shell: bash
+      run: |
+        curl -LOs "https://civicrm.org/get-buildkit.sh"
+        chmod +x "./get-buildkit.sh"
+        ./get-buildkit.sh --full --dir "/home/runner/buildkit"
+
+    - id: "amp-config"
+      name: "Configure amp"
+      shell: bash
+      run: |
+        PATH="/home/runner/buildkit/bin:$PATH"
+        amp config:set --db_type="mysql_dsn"
+        amp config:set --hosts_type="file"
+        amp config:set --httpd_type="apache24"
+        amp config:set --httpd_restart_command="sudo /usr/sbin/apachectl graceful"
+        amp config:set --mysql_dsn="mysql://root@localhost:3306"
+        amp config:set --perm_type="worldWritable"
+        sudo chmod 666 "/etc/apache2/apache2.conf"
+        echo "IncludeOptional /home/runner/.amp/apache.d/*.conf" >> "/etc/apache2/apache2.conf"
+        amp test
+
+    - id: "build-instance"
+      name: "Build a CiviCRM instance"
+      shell: bash
+      run: |
+        /home/runner/buildkit/bin/civibuild create "civi" \
+          --civi-ver "${{ inputs.civicrm }}" \
+          --title "CiviCRM (${{ inputs.civicrm }})" \
+          --type "${{ inputs.build-type }}" \
+          --url "http://civi.test:8080"
+
+    - id: "export-paths"
+      name: "Export CiviCRM Paths"
+      shell: bash
+      run: |
+        PATH="/home/runner/buildkit/bin:$PATH"
+        cd "/home/runner/buildkit/build/civi"
+        ext_dir=$(cv ev 'return CRM_Core_Config::singleton()->extensionsDir' | tr -d '"')
+        echo "ext-dir=$ext_dir" >> "$GITHUB_OUTPUT"

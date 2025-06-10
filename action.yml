@@ -26,17 +26,22 @@ runs:
       name: "Install dependencies"
       shell: bash
       run: |
-        sudo apt install lynx
-        sudo rm /etc/alternatives/php
-        sudo ln -s "/usr/bin/php${{ inputs.php }}" "/etc/alternatives/php"
+        sudo add-apt-repository ppa:ondrej/php
+        sudo apt-get update
+        sudo apt-get install lynx php${{ inputs.php }}
+        cd /home/runner
+        wget https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh
+        bash ./install.sh
+        . ./.nvm/nvm.sh
+        nvm install 22
 
     - id: "install-buildkit"
       name: "Install CiviCRM buildkit"
       shell: bash
       run: |
-        curl -LOs "https://civicrm.org/get-buildkit.sh"
-        chmod +x "./get-buildkit.sh"
-        ./get-buildkit.sh --full --dir "/home/runner/buildkit"
+        cd /home/runner
+        git clone https://github.com/civicrm/civicrm-buildkit.git ./buildkit
+        ./buildkit/bin/civi-download-tools
 
     - id: "amp-config"
       name: "Configure amp"

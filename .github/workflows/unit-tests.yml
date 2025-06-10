@@ -5,7 +5,7 @@ on:
     inputs:
       os:
         description: "OS image(s)"
-        default: '["ubuntu-22.04" ]'
+        default: '["ubuntu-24.04" ]'
       civicrm:
         description: "CiviCRM Core Version(s)"
         default: '["5.69"]'

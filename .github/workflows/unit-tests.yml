@@ -9,9 +9,9 @@ on:
       civicrm:
         description: "CiviCRM Core Version(s)"
         default: '["5.69"]'
-      mysql:
-        description: "MySQL version(s)"
-        default: '["8.0"]'
+      mariadb:
+        description: "MariaDB version(s)"
+        default: '["11.4"]'
       php:
         description: "PHP version(s)"
         default: '["8.1"]'
@@ -20,21 +20,21 @@ jobs:
   install-civicrm:
     strategy:
       matrix:
-        os: ${{ fromJSON(github.event.inputs.products) }}
-        civicrm: ${{ fromJSON(github.event.inputs.civicrm) }}
-        mysql: ${{ fromJSON(github.event.inputs.mysql) }}
-        php: ${{ fromJSON(github.event.inputs.php) }}
+        os: ${{ fromJSON(inputs.os) }}
+        civicrm: ${{ fromJSON(inputs.civicrm) }}
+        mariadb: ${{ fromJSON(inputs.mariadb) }}
+        php: ${{ fromJSON(inputs.php) }}
     runs-on: "${{ matrix.os }}"
 
     services:
-      mysql:
-        image: "mysql:${{ matrix.mysql }}"
+      mariadb:
+        image: "mariadb:${{ matrix.mariadb }}"
         env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "yes"
         ports:
           - "3306:3306"
         options: >-
-          --health-cmd="mysqladmin ping"
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
           --health-interval="10s"
           --health-timeout="5s"
           --health-retries="3"

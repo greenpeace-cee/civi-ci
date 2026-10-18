@@ -1,0 +1,274 @@
+name: "CiviCRM extension tests"
+
+# Reusable workflow for CiviCRM extensions: for every matrix combination it
+# builds a CiviCRM instance with civibuild, installs the calling repository as
+# an extension and runs its PHPUnit tests.
+#
+# Minimal caller (.github/workflows/unit-tests.yml in the extension repo):
+#
+#   on:
+#     push:
+#       branches: [main]
+#     pull_request:
+#   jobs:
+#     tests:
+#       uses: greenpeace-cee/civi-ci/.github/workflows/tests.yml@main
+#
+# Every matrix dimension is a JSON array. The value used is, in this order:
+#   1. the repository/organization variable named in the input description,
+#      e.g. CIVI_CI_CIVICRM (lets you tweak the matrix without a commit),
+#   2. the `with:` input of the calling workflow,
+#   3. the default declared below.
+#
+# See README.md for the full documentation.
+
+on:
+  workflow_call:
+    inputs:
+      civicrm:
+        description: "CiviCRM version(s) for `civibuild --civi-ver` (variable: CIVI_CI_CIVICRM)"
+        type: string
+        default: '["6.10", "master"]'
+      php:
+        description: "PHP version(s) (variable: CIVI_CI_PHP)"
+        type: string
+        default: '["8.1"]'
+      database:
+        description: "Database Docker image(s), `mariadb:<ver>` or `mysql:<ver>` (variable: CIVI_CI_DATABASE)"
+        type: string
+        default: '["mariadb:11.4"]'
+      os:
+        description: "Runner image(s) (variable: CIVI_CI_OS)"
+        type: string
+        default: '["ubuntu-24.04"]'
+      build-type:
+        description: "civibuild build type(s) (variable: CIVI_CI_BUILD_TYPE)"
+        type: string
+        default: '["standalone-clean"]'
+      excludes:
+        description: "Matrix combinations to skip, a JSON array of objects as in `strategy.matrix.exclude` (variable: CIVI_CI_EXCLUDES)"
+        type: string
+        default: '[]'
+      extension:
+        description: "Extension key. Default: the `key` attribute of info.xml"
+        type: string
+        default: ''
+      dependencies:
+        description: >-
+          Extensions to clone into the extension directory before installing,
+          one per line: a git URL optionally followed by a branch or tag.
+          Dependencies with a composer.json get `composer install --no-dev`.
+        type: string
+        default: ''
+      install-script:
+        description: >-
+          Bash script that installs the extension. Runs in the build directory
+          after the extension and its dependencies were copied into $EXT_DIR,
+          with $EXTENSION, $EXT_DIR and $BUILD_DIR set and buildkit on $PATH.
+        type: string
+        default: 'cv en "$EXTENSION"'
+      test-script:
+        description: "Bash script that runs the tests. Runs in the extension directory with the same environment as install-script."
+        type: string
+        default: 'phpunit9'
+
+jobs:
+  matrix:
+    name: "Resolve matrix"
+    # Skip CI for WIP commits.
+    if: ${{ !startsWith(github.event.head_commit.message, 'WIP') }}
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        name: "Combine variables, inputs and defaults"
+        env:
+          CIVICRM: ${{ vars.CIVI_CI_CIVICRM || inputs.civicrm }}
+          PHP: ${{ vars.CIVI_CI_PHP || inputs.php }}
+          DATABASE: ${{ vars.CIVI_CI_DATABASE || inputs.database }}
+          OS: ${{ vars.CIVI_CI_OS || inputs.os }}
+          BUILD_TYPE: ${{ vars.CIVI_CI_BUILD_TYPE || inputs.build-type }}
+          EXCLUDES: ${{ vars.CIVI_CI_EXCLUDES || inputs.excludes }}
+        run: |
+          matrix=$(jq -cn \
+            --argjson civicrm "$CIVICRM" \
+            --argjson php "$PHP" \
+            --argjson database "$DATABASE" \
+            --argjson os "$OS" \
+            --argjson build_type "$BUILD_TYPE" \
+            --argjson excludes "$EXCLUDES" \
+            '{
+              civicrm: $civicrm,
+              php: $php,
+              database: $database,
+              os: $os,
+              "build-type": $build_type,
+              exclude: $excludes
+            } | if .exclude == [] then del(.exclude) else . end')
+          echo "$matrix" | jq .
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  tests:
+    name: "CiviCRM ${{ matrix.civicrm }}, PHP ${{ matrix.php }}, ${{ matrix.database }}, ${{ matrix.build-type }}, ${{ matrix.os }}"
+    needs: matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+
+    services:
+      database:
+        image: ${{ matrix.database }}
+        env:
+          # Each image only reads its own variable, so both can be set.
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "yes"
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd="${{ startsWith(matrix.database, 'mysql') && 'mysqladmin ping' || 'healthcheck.sh --connect --innodb_initialized' }}"
+          --health-interval="10s"
+          --health-timeout="5s"
+          --health-retries="3"
+
+    steps:
+      - id: checkout
+        name: "Clone the extension repository"
+        uses: actions/checkout@v4
+
+      - id: install-deps
+        name: "Install PHP ${{ matrix.php }}, Apache and Node"
+        env:
+          PHP: ${{ matrix.php }}
+        run: |
+          sudo add-apt-repository ppa:ondrej/php
+          sudo apt-get update
+          sudo apt-get install -y lynx "php$PHP"
+          # PHP extensions required by CiviCRM:
+          # https://docs.civicrm.org/sysadmin/en/latest/requirements/#php-extensions
+          sudo apt-get install -y "php$PHP-"{bcmath,curl,gd,intl,mbstring,mysql,xml,zip}
+          sudo apt-get install -y --no-install-recommends "libapache2-mod-php$PHP"
+          # The runner image ships a newer PHP which would otherwise stay the
+          # default for the CLI (civibuild, cv, phpunit); make the matrix
+          # version the default everywhere.
+          sudo update-alternatives --set php "/usr/bin/php$PHP"
+          sudo a2enmod rewrite
+          # Run Apache as the same user as civibuild and the tests, so that
+          # files they write into the build (caches, ...) stay replaceable.
+          sudo sed -i "s/^export APACHE_RUN_USER=.*/export APACHE_RUN_USER=$(id -un)/; s/^export APACHE_RUN_GROUP=.*/export APACHE_RUN_GROUP=$(id -gn)/" /etc/apache2/envvars
+          sudo systemctl restart apache2
+          cd "$HOME"
+          wget -q https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh
+          bash ./install.sh
+          . ./.nvm/nvm.sh
+          nvm install 22
+
+      - id: install-buildkit
+        name: "Install CiviCRM buildkit"
+        run: |
+          git clone --quiet https://github.com/civicrm/civicrm-buildkit.git "$HOME/buildkit"
+          "$HOME/buildkit/bin/civi-download-tools"
+          echo "$HOME/buildkit/bin" >> "$GITHUB_PATH"
+
+      - id: amp-config
+        name: "Configure amp"
+        run: |
+          amp config:set --db_type="mysql_dsn"
+          amp config:set --hosts_type="file"
+          amp config:set --httpd_type="apache24"
+          amp config:set --httpd_restart_command="sudo /usr/sbin/apachectl graceful"
+          amp config:set --mysql_dsn="mysql://root@localhost:3306"
+          amp config:set --perm_type="worldWritable"
+          sudo chmod 666 "/etc/apache2/apache2.conf"
+          echo "IncludeOptional $HOME/.amp/apache.d/*.conf" >> "/etc/apache2/apache2.conf"
+          amp test
+
+      - id: build
+        name: "Build CiviCRM ${{ matrix.civicrm }} (${{ matrix.build-type }})"
+        run: |
+          civibuild create "civi" \
+            --civi-ver "${{ matrix.civicrm }}" \
+            --title "CiviCRM (${{ matrix.civicrm }})" \
+            --type "${{ matrix.build-type }}" \
+            --url "http://civi.test:8080"
+          echo "BUILD_DIR=$HOME/buildkit/build/civi" >> "$GITHUB_ENV"
+
+      - id: check-build
+        name: "Check the build is reachable over HTTP"
+        env:
+          PHP: ${{ matrix.php }}
+        run: |
+          case "${{ matrix.build-type }}" in
+            standalone*) path="civicrm/login" ;;
+            wp*) path="wp-login.php" ;;
+            *) path="user/login" ;;
+          esac
+          cd "$BUILD_DIR"
+          url=$(cv url "$path" | tr -d '"')
+          status=$(curl -sS -o "$RUNNER_TEMP/login.html" -w '%{http_code}' "$url" || true)
+          echo "GET $url -> HTTP $status"
+          if [ "$status" != 200 ]; then
+            head -c 2000 "$RUNNER_TEMP/login.html"; echo
+            namei -l "$(cv path -d '[cms.root]/index.php')"
+            sudo apachectl -M
+            php -m
+            ls "/etc/php/$PHP"/*/conf.d "/var/lib/php/modules/$PHP/registry"
+            dpkg -l 'php*' | awk '/^ii/ { print $2 }'
+            sudo systemctl status apache2 --no-pager || true
+            sudo tail -n 50 /var/log/apache2/error.log "$HOME"/.amp/log/*error_log
+            exit 1
+          fi
+
+      - id: paths
+        name: "Determine extension key and directory"
+        env:
+          EXTENSION: ${{ inputs.extension }}
+        run: |
+          if [ -z "$EXTENSION" ]; then
+            # shellcheck disable=SC2016
+            EXTENSION=$(php -r 'echo (string) simplexml_load_file($argv[1])["key"];' "$GITHUB_WORKSPACE/info.xml")
+          fi
+          if [ -z "$EXTENSION" ]; then
+            echo "::error::Could not determine the extension key from info.xml; set the 'extension' input."
+            exit 1
+          fi
+          cd "$BUILD_DIR"
+          EXT_DIR=$(cv ev 'return CRM_Core_Config::singleton()->extensionsDir;' | tr -d '"')
+          echo "Extension: $EXTENSION"
+          echo "Extension directory: $EXT_DIR"
+          {
+            echo "EXTENSION=$EXTENSION"
+            echo "EXT_DIR=$EXT_DIR"
+          } >> "$GITHUB_ENV"
+
+      - id: dependencies
+        name: "Clone extension dependencies"
+        if: ${{ inputs.dependencies != '' }}
+        env:
+          DEPENDENCIES: ${{ inputs.dependencies }}
+        run: |
+          while read -r url ref _; do
+            [ -n "$url" ] || continue
+            case "$url" in '#'*) continue ;; esac
+            name=$(basename "$url" .git)
+            echo "::group::$name${ref:+ ($ref)}"
+            git clone --quiet --depth 1 ${ref:+--branch "$ref"} "$url" "$EXT_DIR/$name"
+            if [ -f "$EXT_DIR/$name/composer.json" ]; then
+              composer install --working-dir="$EXT_DIR/$name" --no-dev --no-interaction --no-progress
+            fi
+            echo "::endgroup::"
+          done <<< "$DEPENDENCIES"
+
+      - id: install
+        name: "Install the extension"
+        run: |
+          cp -R "$GITHUB_WORKSPACE" "$EXT_DIR/$EXTENSION"
+          cd "$BUILD_DIR"
+          ${{ inputs.install-script }}
+
+      - id: test
+        name: "Run tests"
+        run: |
+          cd "$EXT_DIR/$EXTENSION"
+          ${{ inputs.test-script }}

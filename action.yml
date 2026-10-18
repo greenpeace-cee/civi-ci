@@ -1,5 +1,7 @@
 name: "CiviCRM CI"
-description: "CiviCRM Continuous Integration"
+description: >-
+  Builds a CiviCRM instance for extension tests. Deprecated: use the reusable
+  workflow .github/workflows/tests.yml instead, see README.md.
 
 inputs:
   civicrm:

@@ -34,7 +34,9 @@ runs:
         sudo apt-get install -y $(printf "php${{ inputs.php }}-%s " bcmath curl gd intl mbstring mysql xml zip)
         sudo apt-get install -y --no-install-recommends "libapache2-mod-php${{ inputs.php }}"
         sudo a2enmod rewrite
-        sudo chmod o+x "$HOME"
+        # Run Apache as the same user as civibuild and the tests, so that
+        # files they write into the build (caches, ...) stay replaceable.
+        sudo sed -i "s/^export APACHE_RUN_USER=.*/export APACHE_RUN_USER=$(id -un)/; s/^export APACHE_RUN_GROUP=.*/export APACHE_RUN_GROUP=$(id -gn)/" /etc/apache2/envvars
         sudo systemctl restart apache2
         cd /home/runner
         wget https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh

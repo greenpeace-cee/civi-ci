@@ -83,10 +83,10 @@ the `<requires>` in `info.xml`.
 
 The remaining two steps are Bash scripts that can be replaced:
 
-| Input            | Default            | Working directory                   |
-|------------------|--------------------|-------------------------------------|
-| `install-script` | `cv en "$EXTENSION"` | The civibuild build (`$BUILD_DIR`)  |
-| `test-script`    | `phpunit9`         | The extension (`$EXT_DIR/$EXTENSION`) |
+| Input            | Default                                         | Working directory                     |
+|------------------|-------------------------------------------------|---------------------------------------|
+| `install-script` | `cv en "$EXTENSION"`                            | The civibuild build (`$BUILD_DIR`)    |
+| `test-script`    | `phpunit9 --log-junit "$JUNIT_DIR/phpunit.xml"` | The extension (`$EXT_DIR/$EXTENSION`) |
 
 Both run with buildkit's `bin` on `$PATH` and these variables:
 
@@ -94,6 +94,7 @@ Both run with buildkit's `bin` on `$PATH` and these variables:
 - `EXT_DIR`: the CiviCRM extension directory. The repository was copied to
   `$EXT_DIR/$EXTENSION` before `install-script` runs.
 - `BUILD_DIR`: the civibuild build directory (`cv` and `civibuild` work there).
+- `JUNIT_DIR`: an empty directory for JUnit XML reports
 
 ```yaml
     with:
@@ -102,8 +103,8 @@ Both run with buildkit's `bin` on `$PATH` and these variables:
         cv en "$EXTENSION"
         cv api4 Setting.set '{"values": {"my_setting": "ci"}}'
       test-script: |
-        phpunit9 --group headless
-        phpunit9 --group e2e
+        phpunit9 --group headless --log-junit "$JUNIT_DIR/headless.xml"
+        phpunit9 --group e2e --log-junit "$JUNIT_DIR/e2e.xml"
 ```
 
 `phpunit9` picks `CIVICRM_UF=UnitTests` or the real CMS itself depending on

@@ -20,6 +20,9 @@ name: "CiviCRM extension tests"
 #   2. the `with:` input of the calling workflow,
 #   3. the default declared below.
 #
+# JUnit XML reports that test-script writes to $JUNIT_DIR are turned into
+# annotations on the failing tests and a summary on the workflow run page.
+#
 # See README.md for the full documentation.
 
 on:
@@ -68,9 +71,13 @@ on:
         type: string
         default: 'cv en "$EXTENSION"'
       test-script:
-        description: "Bash script that runs the tests. Runs in the extension directory with the same environment as install-script."
+        description: >-
+          Bash script that runs the tests. Runs in the extension directory with
+          the same environment as install-script, plus $JUNIT_DIR: JUnit XML
+          reports written there (phpunit --log-junit) are reported as
+          annotations and in the job summary.
         type: string
-        default: 'phpunit9'
+        default: 'phpunit9 --log-junit "$JUNIT_DIR/phpunit.xml"'
 
 jobs:
   matrix:
@@ -235,11 +242,14 @@ jobs:
           fi
           cd "$BUILD_DIR"
           EXT_DIR=$(cv ev 'return CRM_Core_Config::singleton()->extensionsDir;' | tr -d '"')
+          JUNIT_DIR="$RUNNER_TEMP/junit"
+          mkdir -p "$JUNIT_DIR"
           echo "Extension: $EXTENSION"
           echo "Extension directory: $EXT_DIR"
           {
             echo "EXTENSION=$EXTENSION"
             echo "EXT_DIR=$EXT_DIR"
+            echo "JUNIT_DIR=$JUNIT_DIR"
           } >> "$GITHUB_ENV"
 
       - id: dependencies
@@ -272,3 +282,45 @@ jobs:
         run: |
           cd "$EXT_DIR/$EXTENSION"
           ${{ inputs.test-script }}
+
+      - id: junit
+        name: "Prepare test reports"
+        if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
+        env:
+          NAME: "civicrm-${{ matrix.civicrm }}-php${{ matrix.php }}-${{ matrix.database }}-${{ matrix.build-type }}-${{ matrix.os }}"
+        run: |
+          shopt -s nullglob
+          reports=("$JUNIT_DIR"/*.xml)
+          if [ ${#reports[@]} -eq 0 ]; then
+            echo "No JUnit reports in \$JUNIT_DIR, skipping test report."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Make paths in test results relative to the repository so annotations attach to the right files
+          prefix=$(realpath "$EXT_DIR/$EXTENSION")/
+          prefix_re=$(printf '%s' "$prefix" | sed 's/[][\.|$*^]/\\&/g')
+          sed -i "s|$prefix_re||g" "${reports[@]}"
+          {
+            echo "found=true"
+            # Artifact names must not contain characters like ":" or "/".
+            echo "artifact=junit-$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '-')"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: report
+        name: "Report test results"
+        if: ${{ !cancelled() && steps.junit.outputs.found == 'true' }}
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: ${{ env.JUNIT_DIR }}/*.xml
+          annotate_only: true
+          check_name: "PHPUnit"
+          detailed_summary: true
+          failed_summary_logs: true
+
+      - id: upload-reports
+        name: "Upload test reports"
+        if: ${{ !cancelled() && steps.junit.outputs.found == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.junit.outputs.artifact }}
+          path: ${{ env.JUNIT_DIR }}/*.xml

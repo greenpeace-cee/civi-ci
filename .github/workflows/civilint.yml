@@ -1,16 +1,13 @@
 name: "civilint"
 
 # Reusable workflow for CiviCRM extensions: runs CiviCRM's `civilint` (php -l,
-# phpcs with the CiviCRM coding standard, jshint) over every tracked file and
-# reports findings as inline annotations on the pull request diff. On pull
-# requests it additionally posts the fixes that `phpcbf` would apply as
-# suggested changes, so they can be accepted with one click.
+# phpcs with the CiviCRM coding standard, jshint) over the files a pull request
+# touches, like core's style check, and posts `phpcbf` fixes as suggested
+# changes. Other events skip the job.
 #
 # Minimal caller (.github/workflows/civilint.yml in the extension repo):
 #
 #   on:
-#     push:
-#       branches: [main]
 #     pull_request:
 #   permissions:
 #     contents: read
@@ -36,8 +33,7 @@ permissions:
 
 jobs:
   civilint:
-    # Skip CI for WIP commits.
-    if: ${{ !startsWith(github.event.head_commit.message, 'WIP') }}
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,6 +44,9 @@ jobs:
       - id: checkout
         name: "Clone the extension repository"
         uses: actions/checkout@v4
+        with:
+          # Include the base branch tip (HEAD^1) to diff against.
+          fetch-depth: 2
 
       - id: setup-php
         name: "Set up PHP"
@@ -59,7 +58,6 @@ jobs:
 
       - id: setup-reviewdog
         name: "Set up reviewdog"
-        if: ${{ github.event_name == 'pull_request' }}
         uses: reviewdog/action-setup@v1
         with:
           reviewdog_version: latest
@@ -84,9 +82,15 @@ jobs:
       - id: lint
         name: "Run civilint"
         run: |
+          # Files the pull request adds or modifies, as in core's `xcivilint`.
+          git diff --name-only --diff-filter=d HEAD^1 HEAD > "$RUNNER_TEMP/touched-files"
+          echo "::group::Files touched by this pull request"
+          cat "$RUNNER_TEMP/touched-files"
+          echo "::endgroup::"
+
           mkdir -p "$RUNNER_TEMP/checkstyle"
           status=0
-          git ls-files | civilint --checkstyle "$RUNNER_TEMP/checkstyle" - || status=$?
+          civilint --checkstyle "$RUNNER_TEMP/checkstyle" - < "$RUNNER_TEMP/touched-files" || status=$?
 
           # phpcs reports absolute paths; annotations only attach to the diff
           # when the path is relative to the repository root.
@@ -102,15 +106,15 @@ jobs:
         name: "Suggest phpcbf fixes"
         # Run even when civilint failed (that is when the suggestions are
         # useful), but not when it was skipped because setup failed.
-        if: ${{ !cancelled() && steps.lint.conclusion != 'skipped' && github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() && steps.lint.conclusion != 'skipped' }}
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # `--report=diff` is the patch phpcbf would apply. phpcs labels the
           # new side "PHP_CodeSniffer"; reviewdog takes the file name from
           # that side, so copy the real path over.
-          git ls-files '*.php' \
-            | xargs phpcs-civi -q --report=diff --basepath=. > "$RUNNER_TEMP/phpcbf.diff" || true
+          grep '\.php$' "$RUNNER_TEMP/touched-files" \
+            | xargs -r phpcs-civi -q --report=diff --basepath=. > "$RUNNER_TEMP/phpcbf.diff" || true
           awk '/^--- /{path=substr($0,5)} /^\+\+\+ PHP_CodeSniffer$/{print "+++ " path; next} {print}' \
             "$RUNNER_TEMP/phpcbf.diff" \
             | reviewdog -f=diff -f.diff.strip=0 -name=phpcbf -level=warning \

@@ -119,9 +119,6 @@ Add `.github/workflows/civilint.yml` to the extension repository:
 name: "civilint"
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
 
 permissions:
@@ -134,10 +131,11 @@ jobs:
     uses: greenpeace-cee/civi-ci/.github/workflows/civilint.yml@main
 ```
 
-It runs `civilint` (`php -l`, phpcs with the CiviCRM coding standard, jshint)
-over every tracked file and reports findings as inline annotations. On pull
-requests it also posts the changes `phpcbf` would make as review suggestions
-via reviewdog, which is why the caller has to grant `pull-requests: write`.
+Like core's style check, it runs `civilint` (`php -l`, phpcs with the CiviCRM
+coding standard, jshint) on pull requests only, over the files the pull request
+touches; any finding in those files fails the job. Findings are reported as
+inline annotations, and `phpcbf` fixes are posted as review suggestions via
+reviewdog, which is why the caller has to grant `pull-requests: write`.
 
 `php -l` checks against the first PHP version of the test matrix (the
 `CIVI_CI_PHP` variable, or 8.1). Pass `with: php: "8.3"` to use another one.

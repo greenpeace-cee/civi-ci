@@ -148,10 +148,15 @@ jobs:
         name: "Install PHP ${{ matrix.php }}, Apache and Node"
         env:
           PHP: ${{ matrix.php }}
+          DATABASE: ${{ matrix.database }}
         run: |
           sudo add-apt-repository ppa:ondrej/php
           sudo apt-get update
           sudo apt-get install -y lynx "php$PHP"
+          # The runner's MySQL 8 mysqldump doesn't work with MariaDB
+          if [[ "$DATABASE" == mariadb* ]]; then
+            sudo apt-get install -y mariadb-client
+          fi
           # PHP extensions required by CiviCRM:
           # https://docs.civicrm.org/sysadmin/en/latest/requirements/#php-extensions
           sudo apt-get install -y "php$PHP-"{bcmath,curl,gd,intl,mbstring,mysql,xml,zip}
